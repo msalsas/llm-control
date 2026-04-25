@@ -36,7 +36,12 @@ class LmStudioMonitor:
         )
 
     async def list_loaded_models(self) -> list[LoadedModel]:
-        """List loaded models from /api/v1/models response (loaded_instances)."""
+        """List loaded models from /api/v1/models response (loaded_instances).
+
+        LMStudio doesn't expose per-model VRAM/RAM/CPU stats, so vram_allocated
+        stays at its default 0. The monitor display logic hides the VRAM column
+        when all values are zero.
+        """
         data = await self.client.get("models")
         models: list[LoadedModel] = []
         for model_entry in parse_model_list(data):
