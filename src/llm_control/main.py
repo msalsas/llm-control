@@ -4,6 +4,7 @@ import asyncio
 import logging
 from typing import Any
 
+import httpx
 import click
 
 # Configure root logger
@@ -178,6 +179,7 @@ def monitor(backend: str, watch: bool, interval: int, as_json: bool):
                                     click.echo("No models loaded.")
 
                             if "available_models" in data:
+                                click.echo()  # blank line separator
                                 if data["available_models"]:
                                     headers = ["Name", "Path"]
                                     rows = [[m["name"], m["path"]] for m in data["available_models"]]
@@ -188,10 +190,11 @@ def monitor(backend: str, watch: bool, interval: int, as_json: bool):
 
                     except Exception as e:
                         failure_counts[name] += 1
+                        error_msg = "not running" if any(x in type(e).__name__ for x in ["Connect", "Timeout"]) else str(e)
                         if as_json:
-                            click.echo(format_json({"backend": name, "error": str(e)}))
+                            click.echo(format_json({"backend": name, "error": error_msg}))
                         else:
-                            click.echo(f"[{name}] Error: {e}", err=True)
+                            click.echo(f"[{name}] {error_msg}", err=True)
                         # Warn after consecutive failures threshold
                         if failure_counts[name] >= WARN_THRESHOLD and not as_json:
                             click.echo(
@@ -409,8 +412,9 @@ def status(backend: str | None, as_json: bool):
             for name, info in results.items():
                 reachable = "Yes" if info.get("reachable") else "No"
                 loaded = info.get("loaded_models", "-")
-                error = f" ({info.get('error', '')})" if "error" in info else ""
-                rows.append([name.capitalize(), reachable, str(loaded) + error])
+                not_running = "not running" if (not info.get("reachable") and "error" not in info) else ""
+                extra = f" ({info.get('error', '')})" if info.get("error") else (f" [{not_running}]" if not_running else "")
+                rows.append([name.capitalize(), reachable, str(loaded) + extra])
             click.echo(format_table(rows, headers))
 
     try:

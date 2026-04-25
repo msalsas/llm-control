@@ -59,7 +59,7 @@ class SwarmUIClient:
                     logger.info("Obtained new SwarmUI session")
                     return session_id
             except (httpx.HTTPError, httpx.RequestError) as exc:
-                logger.warning("Attempt %d to get session failed: %s", attempt + 1, exc)
+                logger.debug("Session get attempt %d failed: %s", attempt + 1, exc)
                 if attempt < len(self._retry_intervals) - 1:
                     await asyncio.sleep(delay)
                 else:
@@ -90,7 +90,7 @@ class SwarmUIClient:
                 logger.info("GET %s succeeded (attempt %d)", url, attempt + 1)
                 return resp.json()
             except (httpx.HTTPError, httpx.RequestError) as exc:
-                logger.warning("Attempt %d failed for GET %s: %s", attempt + 1, url, exc)
+                logger.debug("GET attempt %d failed for %s: %s", attempt + 1, url, exc)
                 self._session_id = None  # Force session refresh on error
                 if attempt < len(self._retry_intervals) - 1:
                     await asyncio.sleep(delay)
@@ -111,7 +111,7 @@ class SwarmUIClient:
                 logger.info("POST %s succeeded (attempt %d)", url, attempt + 1)
                 return resp.json()
             except (httpx.HTTPError, httpx.RequestError) as exc:
-                logger.warning("Attempt %d failed for POST %s: %s", attempt + 1, url, exc)
+                logger.debug("POST attempt %d failed for %s: %s", attempt + 1, url, exc)
                 self._session_id = None  # Force session refresh on error
                 if attempt < len(self._retry_intervals) - 1:
                     await asyncio.sleep(delay)
