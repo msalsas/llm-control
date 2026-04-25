@@ -128,24 +128,40 @@ class SwarmUIManager:
         )
 
     async def list_available_models(self) -> list[DownloadedModel]:
-        """List downloaded models via /API/ListModels."""
-        data = await self.client.post("ListModels")
+        """List downloaded models via /API/ListModels.
+
+        SwarmUI requires path and depth parameters to enumerate the model directory.
+        Recursively walks all subfolders to return a complete model listing.
+        """
         models: list[DownloadedModel] = []
-
-        # Use shared parser to handle dict-with-list responses
-        items = parse_model_list(data)
-        for item in items:
-            if isinstance(item, dict):
-                name = item.get("name", item.get("title", "unknown"))
-                path = item.get("path", "")
-                size = item.get("size_gb", 0.0)
-                models.append(
-                    DownloadedModel(name=name, path=path, size_gb=size, backend="swarmui")
-                )
-            elif isinstance(item, str):
-                models.append(DownloadedModel(name=item, backend="swarmui"))
-
+        await self._walk_model_dir("", models)
         return models
+
+    async def _walk_model_dir(self, path: str, models: list[DownloadedModel]) -> None:
+        """Recursively walk the model directory collecting all files."""
+        data = await self.client.post("ListModels", {"path": path, "depth": 0})
+
+        if not isinstance(data, dict):
+            return
+
+        # SwarmUI returns full paths in file names (e.g. "ZImage/file.safetensors")
+        for item in data.get("files", []):
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name", item.get("title", "unknown"))
+            # Use the API's full path directly — it already includes folder prefix
+            file_path = item.get("name", "")
+            size = item.get("size_gb", 0.0)
+            models.append(
+                DownloadedModel(name=name, path=file_path, size_gb=size, backend="swarmui")
+            )
+
+        # Recurse into subfolders (API returns folder names without full paths)
+        for folder in data.get("folders", []):
+            if not isinstance(folder, str):
+                continue
+            child = f"{path}/{folder}" if path else folder
+            await self._walk_model_dir(child, models)
 
     async def free_memory(self) -> None:
         """Clear ALL loaded models from ALL backends via /API/FreeBackendMemory.

@@ -294,8 +294,19 @@ def models(backend: str, as_json: bool):
                 if "error" in info:
                     click.echo(info["error"])
                 elif info.get("models"):
-                    headers = ["Name", "Path", "Size (GB)", "Loaded Instances"]
-                    rows = [[m["name"], m["path"], f"{m['size_gb']:.1f}", ", ".join(m.get('loaded_instances', []))] for m in info["models"]]
+                    models = info["models"]
+                    has_size = any(m.get("size_gb", 0) > 0 for m in models)
+                    has_loaded = any(m.get("loaded_instances") for m in models)
+
+                    if has_size and has_loaded:
+                        headers = ["Name", "Path", "Size (GB)", "Loaded Instances"]
+                        rows = [[m["name"], m["path"], f"{m['size_gb']:.1f}", ", ".join(m.get('loaded_instances', []))] for m in models]
+                    elif has_size:
+                        headers = ["Name", "Path", "Size (GB)"]
+                        rows = [[m["name"], m["path"], f"{m['size_gb']:.1f}"] for m in models]
+                    else:
+                        headers = ["Name", "Path"]
+                        rows = [[m["name"], m["path"]] for m in models]
                     click.echo(format_table(rows, headers))
                 else:
                     click.echo("No models available.")

@@ -40,10 +40,13 @@ class SwarmUIClient:
         await self.close()
 
     async def _get_session(self) -> str:
-        """Get a fresh session ID from GetNewSession."""
+        """Get a fresh session ID from GetNewSession.
+
+        SwarmUI requires POST with an empty JSON body and application/json content-type.
+        """
         for attempt, delay in enumerate(self._retry_intervals):
             try:
-                resp = await self._client.post("/API/GetNewSession")
+                resp = await self._client.post("/API/GetNewSession", json={})
                 resp.raise_for_status()
                 data = resp.json()
                 if isinstance(data, str):

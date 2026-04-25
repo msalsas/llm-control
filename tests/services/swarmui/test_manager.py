@@ -31,10 +31,12 @@ class TestSwarmUIManager:
     async def test_list_available_models(self):
         """Test list_available_models parses downloaded models."""
         client = AsyncMock()
+        # SwarmUI ListModels returns files/folders structure with full paths in file names
         client.post.return_value = {
-            "models": [
-                {"name": "model.safetensors", "path": "/models/model.safetensors", "size_gb": 3.5},
-            ]
+            "files": [
+                {"name": "model.safetensors", "size_gb": 3.5},
+            ],
+            "folders": [],
         }
 
         manager = SwarmUIManager(client)
