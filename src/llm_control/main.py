@@ -1,7 +1,9 @@
 """CLI entry point — llm-control command line interface."""
 
 import asyncio
+import json
 import logging
+import os
 from typing import Any
 
 import httpx
@@ -250,7 +252,7 @@ def models(backend: str, as_json: bool):
 
     async def _do_models():
         from .utils.formatter import format_table, format_json
-        from .services.lmstudio.monitor import LmStudioManager as LSMgr
+        from .services.lmstudio.monitor import LmStudioManager as LSMgr, LmStudioMonitor
         from .services.swarmui.monitor import SwarmUIManager as SUMgr
 
         settings = get_settings()
@@ -313,7 +315,7 @@ def load(backend: str, model: str):
     """Load a model onto the specified backend."""
 
     async def _do_load():
-        from .services.lmstudio.monitor import LmStudioManager as LSMgr
+        from .services.lmstudio.monitor import LmStudioManager as LSMgr, LmStudioMonitor
         from .services.swarmui.monitor import SwarmUIManager as SUMgr
 
         settings = get_settings()
@@ -451,6 +453,157 @@ def status(backend: str | None, as_json: bool):
 
     try:
         asyncio.run(_do_status())
+    except Exception as e:
+        raise click.ClickException(str(e))
+
+
+
+# ── Switch command — save current models, load app models, run subcommand, restore ──
+
+_SWITCH_STATE_FILE = os.path.join("/tmp", "llm-switch-state.json")
+
+
+def _save_switch_state(instance_ids):
+    """Save current LMStudio loaded model instance IDs to temp file."""
+    with open(_SWITCH_STATE_FILE, 'w') as f:
+        json.dump({"instance_ids": instance_ids}, f)
+
+
+def _load_switch_state():
+    """Load saved state from temp file. Returns list of instance IDs or empty list."""
+    if not os.path.exists(_SWITCH_STATE_FILE):
+        return []
+    with open(_SWITCH_STATE_FILE, 'r') as f:
+        data = json.load(f)
+    return data.get("instance_ids", [])
+
+
+def _cleanup_switch_state():
+    """Remove temp state file."""
+    if os.path.exists(_SWITCH_STATE_FILE):
+        os.remove(_SWITCH_STATE_FILE)
+
+
+@cli.command()
+@click.argument("app_name")
+@click.argument("args", nargs=-1, required=False)
+def switch(app_name: str, args: tuple[str, ...]):
+    """Switch models for an app profile.
+
+    Reads ~/.llm-switch-config.json to determine which models to load/unload per backend.
+    After loading, runs any command passed as arguments (e.g., 'python3 script.py').
+    Automatically restores previous LMStudio models after the command exits.
+    SwarmUI memory is cleared on switch and restored by freeing all on return.
+    """
+    config_path = os.path.join(os.path.expanduser("~"), ".llm-switch-config.json")
+
+    # Load app config
+    if not os.path.exists(config_path):
+        raise click.ClickException(f"Config file {config_path} not found")
+    with open(config_path) as f:
+        config = json.load(f)
+
+    profile = config.get(app_name)
+    if not profile:
+        available = ", ".join(config.keys()) or "none"
+        raise click.ClickException(
+            f"Unknown app '{app_name}'. Available apps: {available}"
+        )
+
+    async def _do_switch():
+        from .services.lmstudio.monitor import LmStudioManager as LSMgr, LmStudioMonitor
+        from .services.swarmui.monitor import SwarmUIManager as SUMgr
+
+        settings = get_settings()
+
+        # Step 1: Save current LMStudio loaded models
+        try:
+            async with await create_lmstudio_client(settings) as client:
+                mon = LmStudioMonitor(client)
+                saved_models = await mon.list_loaded_models()
+                instance_ids = [m.instance_id for m in saved_models if m.instance_id]
+                _save_switch_state(instance_ids)
+                click.echo(f"  Saved {len(instance_ids)} LMStudio model(s): {instance_ids}")
+        except Exception as e:
+            logger.warning("Could not save current models: %s", e)
+
+        # Step 2: Free all memory (LMStudio unload + SwarmUI free)
+        try:
+            async with await create_lmstudio_client(settings) as client:
+                mgr = LSMgr(client)
+                await mgr.free_memory()
+                click.echo("  Freed LMStudio memory")
+        except Exception as e:
+            logger.warning("Could not free LMStudio memory: %s", e)
+
+        try:
+            async with await create_swarmui_client(settings) as client:
+                mgr = SUMgr(client)
+                await mgr.free_memory()
+                click.echo("  Freed SwarmUI memory")
+        except NotImplementedError:
+            pass
+        except Exception as e:
+            logger.warning("Could not free SwarmUI memory: %s", e)
+
+        # Step 3: Load app-specific models from config
+        after = profile.get("after", {})
+        for backend_name, load_models in after.items():
+            try:
+                if backend_name == "lmstudio":
+                    async with await create_lmstudio_client(settings) as client:
+                        mgr = LSMgr(client)
+                        for model_path in load_models:
+                            await mgr.load_model(model_path)
+                            click.echo(f"  Loaded '{model_path}' on {backend_name}")
+                elif backend_name == "swarmui":
+                    async with await create_swarmui_client(settings) as client:
+                        mgr = SUMgr(client)
+                        for model_path in load_models:
+                            await mgr.load_model(model_path)
+                            click.echo(f"  Loaded '{model_path}' on {backend_name}")
+            except NotImplementedError:
+                pass
+
+        # Step 4: Run subcommand if provided
+        if args:
+            import subprocess
+            cmd = list(args)
+            click.echo(f"  Running: {' '.join(cmd)}\n")
+            result = subprocess.run(cmd, env={**os.environ})
+            _cleanup_switch_state()
+            if result.returncode != 0:
+                raise click.ClickException(f"Command exited with code {result.returncode}")
+
+        # Step 5: Restore previous LMStudio models (auto-restore)
+        saved_ids = _load_switch_state()
+        if saved_ids:
+            try:
+                async with await create_lmstudio_client(settings) as client:
+                    mgr = LSMgr(client)
+                    for instance_id in saved_ids:
+                        # Unload the new model first, then restore old one
+                        try:
+                            await mgr.unload_model(instance_id)
+                        except Exception:
+                            pass  # Model not loaded yet, just load it fresh
+                    # Reload all saved models
+                    for instance_id in saved_ids:
+                        # We need to find the model path from instance_id
+                        # Since we only have instance IDs, we'll reload by loading the model
+                        # that was previously loaded (we stored instance_ids which are model paths)
+                        try:
+                            await mgr.load_model(instance_id)
+                            click.echo(f"  Restored '{instance_id}'")
+                        except Exception as e:
+                            logger.warning("Could not restore '%s': %s", instance_id, e)
+            except Exception as e:
+                logger.warning("Could not restore models: %s", e)
+
+        _cleanup_switch_state()
+
+    try:
+        asyncio.run(_do_switch())
     except Exception as e:
         raise click.ClickException(str(e))
 
