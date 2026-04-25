@@ -35,24 +35,25 @@ class SwarmUIMonitor(IBackendMonitor):
 
         # Handle various response formats
         if isinstance(data, dict):
-            # Check for GPU array
-            gpus = data.get("gpus", [])
-            if isinstance(gpus, list):
+            # GPUs — SwarmUI returns an object keyed by index (e.g., "0", "1")
+            gpus = data.get("gpus", {})
+            if isinstance(gpus, dict):
                 gpu_count = len(gpus)
-                for gpu in gpus:
+                for gpu in gpus.values():
                     if isinstance(gpu, dict):
-                        vram_used += gpu.get("vram_used", 0.0)
-                        vram_total += gpu.get("vram_total", 0.0)
+                        vram_used += gpu.get("used_memory", 0.0) / (1024 ** 3)
+                        vram_total += gpu.get("total_memory", 0.0) / (1024 ** 3)
 
-            # Check for RAM/CPU info
-            ram_info = data.get("ram", {})
+            # RAM — SwarmUI uses "system_ram" with total/used/free (bytes)
+            ram_info = data.get("system_ram", {})
             if isinstance(ram_info, dict):
-                ram_used = ram_info.get("used", 0.0)
-                ram_total = ram_info.get("total", 0.0)
+                ram_used = ram_info.get("used", 0.0) / (1024 ** 3)  # bytes → GB
+                ram_total = ram_info.get("total", 0.0) / (1024 ** 3)
 
+            # CPU — SwarmUI uses "usage" (not "usage_percent")
             cpu_info = data.get("cpu", {})
             if isinstance(cpu_info, dict):
-                cpu_usage = cpu_info.get("usage_percent", 0.0)
+                cpu_usage = cpu_info.get("usage", 0.0)
 
         return ResourceUsage(
             vram_used=vram_used,

@@ -12,22 +12,26 @@ class TestSwarmUIMonitor:
     async def test_get_resource_info(self):
         """Test parsing resource info from GetServerResourceInfo."""
         client = AsyncMock()
+        # SwarmUI returns VRAM/RAM in bytes, CPU usage as percentage
+        GB = 1024 ** 3
         client.post.return_value = {
-            "gpus": [
-                {"vram_used": 4.5, "vram_total": 8.0},
-                {"vram_used": 2.0, "vram_total": 8.0}
-            ],
-            "ram": {"used": 16.0, "total": 32.0},
-            "cpu": {"usage_percent": 45.0},
+            "gpus": {
+                "0": {"used_memory": 4.5 * GB, "total_memory": 8.0 * GB},
+                "1": {"used_memory": 2.0 * GB, "total_memory": 8.0 * GB},
+            },
+            "system_ram": {"used": 16.0 * GB, "total": 32.0 * GB},
+            "cpu": {"usage": 45.0},
         }
 
         monitor = SwarmUIMonitor(client)
         result = await monitor.get_resource_info()
 
         assert isinstance(result, ResourceUsage)
-        assert result.vram_used == 6.5
-        assert result.vram_total == 16.0
+        assert result.vram_used == pytest.approx(6.5)
+        assert result.vram_total == pytest.approx(16.0)
         assert result.gpu_count == 2
+        assert result.ram_used == pytest.approx(16.0)
+        assert result.ram_total == pytest.approx(32.0)
         assert result.cpu_usage == 45.0
 
     @pytest.mark.asyncio
