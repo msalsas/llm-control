@@ -25,7 +25,7 @@ class LmStudioClient:
         self._retry_intervals = retry_intervals or self.DEFAULT_RETRY_INTERVALS
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
-            timeout=httpx.Timeout(30.0),
+            timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=30.0),
             headers={"Authorization": f"Bearer {token}"} if token else {},
         )
 

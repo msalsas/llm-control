@@ -68,7 +68,9 @@ def cli():
               help="Polling interval in seconds (for --watch)")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Output results as JSON instead of table format")
-def monitor(backend: str, watch: bool, interval: int, as_json: bool):
+@click.option("-q", "--quiet", is_flag=True, default=False,
+             help="Suppress messages for unreachable backends")
+def monitor(backend: str, watch: bool, interval: int, as_json: bool, quiet: bool):
     """Monitor backend status and resource usage.
 
     Tracks consecutive failures per backend; warns after 3 consecutive errors.
@@ -105,7 +107,8 @@ def monitor(backend: str, watch: bool, interval: int, as_json: bool):
                             try:
                                 loaded = await mon.list_loaded_models()
                                 lmstudio_data["loaded_models"] = [
-                                    {"name": m.name, "instance_id": m.instance_id} for m in loaded
+                                    {"name": m.name, "instance_id": m.instance_id,
+                                     "vram_allocated_gb": round(m.vram_allocated, 2)} for m in loaded
                                 ]
                             except NotImplementedError as e:
                                 lmstudio_data["loaded_models_error"] = str(e)
@@ -172,8 +175,13 @@ def monitor(backend: str, watch: bool, interval: int, as_json: bool):
 
                             if "loaded_models" in data:
                                 if data["loaded_models"]:
-                                    headers = ["Name", "Instance ID"]
-                                    rows = [[m["name"], m["instance_id"]] for m in data["loaded_models"]]
+                                    has_vram = any("vram_allocated_gb" in m for m in data["loaded_models"])
+                                    if has_vram:
+                                        headers = ["Name", "Instance ID", "VRAM (GB)"]
+                                        rows = [[m["name"], m["instance_id"], f"{m['vram_allocated_gb']:.2f}"] for m in data["loaded_models"]]
+                                    else:
+                                        headers = ["Name", "Instance ID"]
+                                        rows = [[m["name"], m["instance_id"]] for m in data["loaded_models"]]
                                     click.echo(format_table(rows, headers))
                                 else:
                                     click.echo("No models loaded.")
@@ -191,12 +199,13 @@ def monitor(backend: str, watch: bool, interval: int, as_json: bool):
                     except Exception as e:
                         failure_counts[name] += 1
                         error_msg = "not running" if any(x in type(e).__name__ for x in ["Connect", "Timeout"]) else str(e)
-                        if as_json:
-                            click.echo(format_json({"backend": name, "error": error_msg}))
-                        else:
-                            click.echo(f"[{name}] {error_msg}", err=True)
+                        if not quiet or as_json:
+                            if as_json:
+                                click.echo(format_json({"backend": name, "error": error_msg}))
+                            else:
+                                click.echo(f"[{name}] {error_msg}", err=True)
                         # Warn after consecutive failures threshold
-                        if failure_counts[name] >= WARN_THRESHOLD and not as_json:
+                        if failure_counts[name] >= WARN_THRESHOLD and not as_json and not quiet:
                             click.echo(
                                 f"[WARN] {name} failed {failure_counts[name]} times consecutively",
                                 err=True,
@@ -221,50 +230,62 @@ def monitor(backend: str, watch: bool, interval: int, as_json: bool):
 
 @cli.command()
 @click.option("--backend", "-b", "backend",
-              type=click.Choice(["lmstudio", "swarmui"]),
-              default="lmstudio", help="Backend to query")
+              type=click.Choice(["lmstudio", "swarmui", "all"]),
+              default="all", help="Backend to query")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Output results as JSON")
 def models(backend: str, as_json: bool):
     """List available and loaded models."""
 
     async def _do_models():
-        from .utils.formatter import format_table
+        from .utils.formatter import format_table, format_json
         from .services.lmstudio.monitor import LmStudioManager as LSMgr
         from .services.swarmui.monitor import SwarmUIManager as SUMgr
 
         settings = get_settings()
-        if backend == "lmstudio":
-            async with await create_lmstudio_client(settings) as client:
-                manager = LSMgr(client)
-                avail = await manager.list_available_models()
-                data = {
-                    "backend": "lmstudio",
-                    "models": [
-                        {"name": m.name, "path": m.path, "size_gb": round(m.size_gb, 2),
-                         "loaded_instances": m.loaded_instances}
-                        for m in avail
-                    ]
-                }
-        else:
-            async with await create_swarmui_client(settings) as client:
-                manager = SUMgr(client)
-                avail = await manager.list_available_models()
-                data = {
-                    "backend": "swarmui",
-                    "models": [
-                        {"name": m.name, "path": m.path, "size_gb": round(m.size_gb, 2)}
-                        for m in avail
-                    ]
-                }
+        targets = [backend] if backend != "all" else ["lmstudio", "swarmui"]
+        results: dict[str, Any] = {}
+
+        for target in targets:
+            try:
+                if target == "lmstudio":
+                    async with await create_lmstudio_client(settings) as client:
+                        manager = LSMgr(client)
+                        avail = await manager.list_available_models()
+                        results["lmstudio"] = {
+                            "models": [
+                                {"name": m.name, "path": m.path, "size_gb": round(m.size_gb, 2),
+                                 "loaded_instances": m.loaded_instances}
+                                for m in avail
+                            ]
+                        }
+                else:
+                    async with await create_swarmui_client(settings) as client:
+                        manager = SUMgr(client)
+                        avail = await manager.list_available_models()
+                        results["swarmui"] = {
+                            "models": [
+                                {"name": m.name, "path": m.path, "size_gb": round(m.size_gb, 2)}
+                                for m in avail
+                            ]
+                        }
+            except Exception as e:
+                error_msg = "not running" if any(x in type(e).__name__ for x in ["Connect", "Timeout"]) else str(e)
+                results[target] = {"error": error_msg}
 
         if as_json:
-            from .utils.formatter import format_json
-            click.echo(format_json(data))
+            click.echo(format_json(results))
         else:
-            headers = ["Name", "Path", "Size (GB)", "Loaded Instances"]
-            rows = [[m.name, m.path, f"{m.size_gb:.1f}", ", ".join(m.loaded_instances)] for m in avail]
-            click.echo(format_table(rows, headers))
+            for name, info in results.items():
+                click.echo(f"\n=== {name.upper()} ===")
+                if "error" in info:
+                    click.echo(info["error"])
+                elif info.get("models"):
+                    headers = ["Name", "Path", "Size (GB)", "Loaded Instances"]
+                    rows = [[m["name"], m["path"], f"{m['size_gb']:.1f}", ", ".join(m.get('loaded_instances', []))] for m in info["models"]]
+                    click.echo(format_table(rows, headers))
+                else:
+                    click.echo("No models available.")
 
     try:
         asyncio.run(_do_models())
