@@ -44,7 +44,7 @@ llm-control monitor --watch --interval 30
 llm-control status
 
 # List available models
-llm-control models list --backend lmstudio
+llm-control models --backend lmstudio
 ```
 
 ## Configuration
@@ -93,8 +93,8 @@ llm-control monitor --backend swarmui --json
 
 ```bash
 # List available models
-llm-control models list --backend lmstudio
-llm-control models list --backend swarmui
+llm-control models --backend lmstudio
+llm-control models --backend swarmui
 
 # Load a model
 llm-control load --backend lmstudio --model "microsoft/Phi-3-mini"

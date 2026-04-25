@@ -109,6 +109,14 @@ LMStudio and SwarmUI have fundamentally different capabilities:
 
 When implementing features, check which backend is being targeted and handle unsupported operations with clear `NotImplementedError` messages.
 
+### SwarmUI API Specifics
+
+The SwarmUI server has strict API requirements — always follow these patterns:
+
+- **Session creation**: `POST /API/GetNewSession` must include a JSON body (`json={}`) and `Content-Type: application/json`. Bare POST requests return "Wrong content type" (400).
+- **Model listing**: `POST /API/ListModels` requires both `path` and `depth` parameters. Use `{"path": "", "depth": 0}` for root-level files, then recurse into subfolders via their names. Files at deeper levels return full paths in the `name` field (e.g., `"ZImage/file.safetensors"`).
+- **Resource info**: `POST /API/GetServerResourceInfo` returns GPU stats with VRAM/RAM/CPU data under a `gpus` array and separate `ram`/`cpu` objects.
+
 ### Retry Configuration
 
 Retry intervals are configurable via `Settings.retry_intervals`. Default is `(1, 2, 5)` seconds for CLI interactivity. Do not hardcode retry values in clients — always read from settings.
