@@ -1,6 +1,6 @@
 [project]
 name = "llm-control"
-version = "0.1.0"
+version = "0.2.0"
 description = "Monitor and manage LMStudio and SwarmUI backends"
 requires-python = ">=3.10"
 
