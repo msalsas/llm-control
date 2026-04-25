@@ -107,9 +107,14 @@ def monitor(backend: str, watch: bool, interval: int, as_json: bool, quiet: bool
                             try:
                                 loaded = await mon.list_loaded_models()
                                 lmstudio_data["loaded_models"] = [
-                                    {"name": m.name, "instance_id": m.instance_id,
-                                     "vram_allocated_gb": round(m.vram_allocated, 2)} for m in loaded
+                                    {"name": m.name, "instance_id": m.instance_id} for m in loaded
                                 ]
+                                # Only add VRAM column if backend reports non-zero values
+                                if any(m.vram_allocated > 0 for m in loaded):
+                                    lmstudio_data["loaded_models"] = [
+                                        {"name": m.name, "instance_id": m.instance_id,
+                                         "vram_allocated_gb": round(m.vram_allocated, 2)} for m in loaded
+                                    ]
                             except NotImplementedError as e:
                                 lmstudio_data["loaded_models_error"] = str(e)
 
@@ -143,11 +148,17 @@ def monitor(backend: str, watch: bool, interval: int, as_json: bool, quiet: bool
 
                             try:
                                 loaded = await mon.list_loaded_models()
-                                swarmui_data["loaded_models"] = [
-                                    {"name": m.name, "instance_id": m.instance_id,
-                                     "vram_allocated_gb": round(m.vram_allocated, 2)}
-                                    for m in loaded
+                                models_list = [
+                                    {"name": m.name, "instance_id": m.instance_id} for m in loaded
                                 ]
+                                # Only add VRAM column if backend reports non-zero values
+                                if any(m.vram_allocated > 0 for m in loaded):
+                                    models_list = [
+                                        {"name": m.name, "instance_id": m.instance_id,
+                                         "vram_allocated_gb": round(m.vram_allocated, 2)}
+                                        for m in loaded
+                                    ]
+                                swarmui_data["loaded_models"] = models_list
                             except NotImplementedError as e:
                                 swarmui_data["loaded_models_error"] = str(e)
 
