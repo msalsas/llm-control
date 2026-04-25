@@ -1,7 +1,7 @@
 """Tests for formatter."""
 
 import pytest
-from src.llm_control.utils.formatter import format_table, format_json
+from src.llm_control.utils.formatter import format_table, format_json, parse_model_list
 
 
 class TestFormatTable:
@@ -36,3 +36,31 @@ class TestFormatJson:
         data = [1, 2, 3]
         result = format_json(data)
         assert "[1, 2, 3]" in result or "1" in result
+
+
+class TestParseModelList:
+    def test_list_passthrough(self):
+        data = [{"name": "a"}, {"name": "b"}]
+        assert parse_model_list(data) == data
+
+    def test_dict_with_models_key(self):
+        data = {"models": [{"name": "x"}]}
+        assert parse_model_list(data) == [{"name": "x"}]
+
+    def test_dict_with_loaded_models_key(self):
+        data = {"loaded_models": [{"name": "y"}]}
+        assert parse_model_list(data) == [{"name": "y"}]
+
+    def test_dict_with_available_models_key(self):
+        data = {"available_models": [{"name": "z"}]}
+        assert parse_model_list(data) == [{"name": "z"}]
+
+    def test_dict_with_downloaded_key(self):
+        data = {"downloaded": [{"name": "w"}]}
+        assert parse_model_list(data) == [{"name": "w"}]
+
+    def test_unknown_input_returns_empty(self):
+        """parse_model_list should return [] for unrecognized input types."""
+        assert parse_model_list("unexpected string") == []
+        assert parse_model_list(42) == []
+        assert parse_model_list({"unknown_key": [1, 2]}) == []

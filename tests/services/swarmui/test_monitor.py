@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import AsyncMock
-from llm_control.services.swarmui.monitor import SwarmUIMonitor
+from llm_control.services.swarmui.monitor import SwarmUIMonitor, SwarmUIManager
 from llm_control.models.resource import ResourceUsage
 from llm_control.models.model_info import LoadedModel
 
@@ -64,6 +64,22 @@ class TestSwarmUIMonitor:
         assert isinstance(result[0], LoadedModel)
         assert result[0].name == "microsoft/Phi-3-mini"
         assert result[0].vram_allocated == 4.0
+
+    @pytest.mark.asyncio
+    async def test_list_loaded_models_string_items(self):
+        """Test parsing loaded models when items are plain strings."""
+        client = AsyncMock()
+        client.post.return_value = {
+            "models": ["model-a", "model-b"]
+        }
+
+        monitor = SwarmUIMonitor(client)
+        result = await monitor.list_loaded_models()
+
+        assert len(result) == 2
+        assert result[0].name == "model-a"
+        assert result[1].name == "model-b"
+        assert result[0].backend == "swarmui"
 
     @pytest.mark.asyncio
     async def test_get_server_status(self):
