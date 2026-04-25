@@ -1,0 +1,21 @@
+[project]
+name = "llm-control"
+version = "0.1.0"
+description = "Monitor and manage LMStudio and SwarmUI backends"
+requires-python = ">=3.10"
+
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "respx>=0.4"]
+
+[project.scripts]
+llm-control = "llm_control.main:cli"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

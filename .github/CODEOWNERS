@@ -1,0 +1,9 @@
+# Code ownership — routes review requests to appropriate reviewers
+# Update this file when project structure changes
+
+# All Python source and test files
+*.py      @maintainers
+
+# Configuration files
+pyproject.toml  @maintainers
+setup.cfg       @maintainers
