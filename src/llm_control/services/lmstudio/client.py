@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -37,37 +37,44 @@ class LmStudioClient:
         """Exit async context manager — closes HTTP client."""
         await self.close()
 
-    async def get(self, path: str, **kwargs: Any) -> dict:
-        """Send a GET request and return the JSON response."""
-        url = f"/api/v1/{path.lstrip('/')}"
+    async def _retry(self, func: Callable, *args: Any, **kwargs: Any) -> Any:
+        """Execute an async function with configurable retry/backoff.
+
+        Shared helper used by get() and post() to eliminate duplicate retry loops.
+        """
         for attempt, delay in enumerate(self._retry_intervals):
             try:
-                resp = await self._client.get(url, **kwargs)
-                resp.raise_for_status()
-                logger.info("GET %s succeeded (attempt %d)", url, attempt + 1)
-                return resp.json()
-            except (httpx.HTTPError, httpx.RequestError) as exc:
-                logger.warning("Attempt %d failed for GET %s: %s", attempt + 1, url, exc)
+                return await func(*args, **kwargs)
+            except httpx.HTTPError as exc:
+                logger.warning("Attempt %d failed: %s", attempt + 1, exc)
                 if attempt < len(self._retry_intervals) - 1:
                     await asyncio.sleep(delay)
                 else:
                     raise
 
+    async def get(self, path: str, **kwargs: Any) -> dict:
+        """Send a GET request and return the JSON response."""
+        url = f"/api/v1/{path.lstrip('/')}"
+
+        async def _do_get():
+            resp = await self._client.get(url, **kwargs)
+            resp.raise_for_status()
+            logger.info("GET %s succeeded", url)
+            return resp.json()
+
+        return await self._retry(_do_get)
+
     async def post(self, path: str, payload: dict | None = None) -> dict:
         """Send a POST request and return the JSON response."""
         url = f"/api/v1/{path.lstrip('/')}"
-        for attempt, delay in enumerate(self._retry_intervals):
-            try:
-                resp = await self._client.post(url, json=payload or {})
-                resp.raise_for_status()
-                logger.info("POST %s succeeded (attempt %d)", url, attempt + 1)
-                return resp.json()
-            except (httpx.HTTPError, httpx.RequestError) as exc:
-                logger.warning("Attempt %d failed for POST %s: %s", attempt + 1, url, exc)
-                if attempt < len(self._retry_intervals) - 1:
-                    await asyncio.sleep(delay)
-                else:
-                    raise
+
+        async def _do_post():
+            resp = await self._client.post(url, json=payload or {})
+            resp.raise_for_status()
+            logger.info("POST %s succeeded", url)
+            return resp.json()
+
+        return await self._retry(_do_post)
 
     async def close(self) -> None:
         """Close the HTTP client."""

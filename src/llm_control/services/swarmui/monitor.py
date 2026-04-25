@@ -6,13 +6,14 @@ from typing import Any
 from llm_control.models.resource import ResourceUsage, GPUStats
 from llm_control.models.model_info import LoadedModel, DownloadedModel
 from llm_control.models.backend_status import ServerStatus, BackendStatus
+from llm_control.services.interface import IBackendMonitor, IModelManager
 from llm_control.services.swarmui.client import SwarmUIClient
 from llm_control.utils.formatter import parse_model_list
 
 logger = logging.getLogger(__name__)
 
 
-class SwarmUIMonitor:
+class SwarmUIMonitor(IBackendMonitor):
     """Collects and transforms monitoring data from SwarmUI."""
 
     def __init__(self, client: SwarmUIClient):
@@ -106,7 +107,7 @@ class SwarmUIMonitor:
         return models
 
 
-class SwarmUIManager:
+class SwarmUIManager(IModelManager):
     """Manages model lifecycle for SwarmUI."""
 
     def __init__(self, client: SwarmUIClient):

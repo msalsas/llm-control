@@ -6,8 +6,11 @@ import logging
 import os
 from typing import Any
 
-import httpx
 import click
+
+from .cli.factories import get_backend_classes
+from .cli.views import (format_available_models_table, format_loaded_models_table,
+                        format_resource_table, format_status_table)
 
 # Configure root logger
 logging.basicConfig(
@@ -31,28 +34,6 @@ def get_settings() -> "Settings":
     return _Settings()
 
 
-async def create_lmstudio_client(settings: Any) -> "LmStudioClient":
-    """Create an LMStudio client from settings."""
-    from .services.lmstudio.client import LmStudioClient as _LMC
-    retry = getattr(settings, "retry_intervals", None)
-    return _LMC(
-        base_url=settings.lmstudio_base_url,
-        token=settings.lmstudio_token,
-        retry_intervals=retry,
-    )
-
-
-async def create_swarmui_client(settings: Any) -> "SwarmUIClient":
-    """Create a SwarmUI client from settings."""
-    from .services.swarmui.client import SwarmUIClient as _SUC
-    retry = getattr(settings, "retry_intervals", None)
-    return _SUC(
-        base_url=settings.swarmui_base_url,
-        token=settings.swarmui_token,
-        retry_intervals=retry,
-    )
-
-
 @click.group()
 @click.version_option(version="0.1.0", prog_name="llm-control")
 def cli():
@@ -71,7 +52,7 @@ def cli():
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Output results as JSON instead of table format")
 @click.option("-q", "--quiet", is_flag=True, default=False,
-             help="Suppress messages for unreachable backends")
+              help="Suppress messages for unreachable backends")
 def monitor(backend: str, watch: bool, interval: int, as_json: bool, quiet: bool):
     """Monitor backend status and resource usage.
 
@@ -79,19 +60,18 @@ def monitor(backend: str, watch: bool, interval: int, as_json: bool, quiet: bool
     """
 
     async def _do_monitor():
+        from .cli.factories import create_client, list_backends
         from .utils.formatter import format_table, format_json
-        from .services.lmstudio.monitor import LmStudioMonitor as LSM, LmStudioManager as LSMgr
-        from .services.swarmui.monitor import SwarmUIMonitor as SUM, SwarmUIManager as SUMgr
 
         settings = get_settings()
         backends_to_monitor = []
         if backend == "lmstudio":
-            backends_to_monitor.append(("lmstudio", await create_lmstudio_client(settings)))
+            backends_to_monitor.append(("lmstudio", create_client(settings, "lmstudio")))
         elif backend == "swarmui":
-            backends_to_monitor.append(("swarmui", await create_swarmui_client(settings)))
+            backends_to_monitor.append(("swarmui", create_client(settings, "swarmui")))
         else:
-            backends_to_monitor.append(("lmstudio", await create_lmstudio_client(settings)))
-            backends_to_monitor.append(("swarmui", await create_swarmui_client(settings)))
+            backends_to_monitor.append(("lmstudio", create_client(settings, "lmstudio")))
+            backends_to_monitor.append(("swarmui", create_client(settings, "swarmui")))
 
         # Track consecutive failures per backend for watch mode alerts
         failure_counts: dict[str, int] = {name: 0 for name, _ in backends_to_monitor}
@@ -101,9 +81,11 @@ def monitor(backend: str, watch: bool, interval: int, as_json: bool, quiet: bool
             while True:
                 for name, client in backends_to_monitor:
                     try:
+                        monitor_cls, manager_cls = get_backend_classes(name)
+
                         if name == "lmstudio":
-                            mon = LSM(client)
-                            mgr = LSMgr(client)
+                            mon = monitor_cls(client)
+                            mgr = manager_cls(client)
                             lmstudio_data: dict[str, Any] = {"backend": "lmstudio"}
 
                             try:
@@ -129,22 +111,12 @@ def monitor(backend: str, watch: bool, interval: int, as_json: bool, quiet: bool
                                 lmstudio_data["available_models_error"] = str(e)
 
                         elif name == "swarmui":
-                            mon = SUM(client)
-                            mgr = SUMgr(client)
+                            mon = monitor_cls(client)
+                            mgr = manager_cls(client)
                             swarmui_data: dict[str, Any] = {"backend": "swarmui"}
 
                             try:
-                                resources = await mon.get_resource_info()
-                                swarmui_data["resources"] = {
-                                    "vram_used_gb": round(resources.vram_used, 2),
-                                    "vram_total_gb": round(resources.vram_total, 2),
-                                    "vram_percent": round(resources.vram_percent, 1),
-                                    "ram_used_gb": round(resources.ram_used, 2),
-                                    "ram_total_gb": round(resources.ram_total, 2),
-                                    "ram_percent": round(resources.ram_percent, 1),
-                                    "cpu_usage_percent": round(resources.cpu_usage, 1),
-                                    "gpu_count": resources.gpu_count,
-                                }
+                                swarmui_data["resources"] = await mon.get_resource_info()
                             except NotImplementedError as e:
                                 swarmui_data["resources_error"] = str(e)
 
@@ -173,31 +145,10 @@ def monitor(backend: str, watch: bool, interval: int, as_json: bool, quiet: bool
                         else:
                             click.echo(f"\n=== {data['backend'].upper()} ===")
                             if "resources" in data:
-                                headers = ["Resource", "Value"]
-                                rows = [
-                                    ["VRAM Used", f"{data['resources']['vram_used_gb']} GB"],
-                                    ["VRAM Total", f"{data['resources']['vram_total_gb']} GB"],
-                                    ["VRAM %", f"{data['resources']['vram_percent']}%"],
-                                    ["RAM Used", f"{data['resources']['ram_used_gb']} GB"],
-                                    ["RAM Total", f"{data['resources']['ram_total_gb']} GB"],
-                                    ["RAM %", f"{data['resources']['ram_percent']}%"],
-                                    ["CPU Usage", f"{data['resources']['cpu_usage_percent']}%"],
-                                    ["GPU Count", str(data['resources']['gpu_count'])],
-                                ]
-                                click.echo(format_table(rows, headers))
+                                click.echo(format_resource_table(data["resources"]))
 
                             if "loaded_models" in data:
-                                if data["loaded_models"]:
-                                    has_vram = any("vram_allocated_gb" in m for m in data["loaded_models"])
-                                    if has_vram:
-                                        headers = ["Name", "Instance ID", "VRAM (GB)"]
-                                        rows = [[m["name"], m["instance_id"], f"{m['vram_allocated_gb']:.2f}"] for m in data["loaded_models"]]
-                                    else:
-                                        headers = ["Name", "Instance ID"]
-                                        rows = [[m["name"], m["instance_id"]] for m in data["loaded_models"]]
-                                    click.echo(format_table(rows, headers))
-                                else:
-                                    click.echo("No models loaded.")
+                                click.echo(format_loaded_models_table(data["loaded_models"]))
 
                             if "available_models" in data:
                                 click.echo()  # blank line separator
@@ -251,9 +202,8 @@ def models(backend: str, as_json: bool):
     """List available and loaded models."""
 
     async def _do_models():
+        from .cli.factories import create_client
         from .utils.formatter import format_table, format_json
-        from .services.lmstudio.monitor import LmStudioManager as LSMgr, LmStudioMonitor
-        from .services.swarmui.monitor import SwarmUIManager as SUMgr
 
         settings = get_settings()
         targets = [backend] if backend != "all" else ["lmstudio", "swarmui"]
@@ -261,10 +211,11 @@ def models(backend: str, as_json: bool):
 
         for target in targets:
             try:
-                if target == "lmstudio":
-                    async with await create_lmstudio_client(settings) as client:
-                        manager = LSMgr(client)
-                        avail = await manager.list_available_models()
+                async with create_client(settings, target) as client:
+                    monitor_cls, manager_cls = get_backend_classes(target)
+                    mgr = manager_cls(client)
+                    avail = await mgr.list_available_models()
+                    if target == "lmstudio":
                         results["lmstudio"] = {
                             "models": [
                                 {"name": m.name, "path": m.path, "size_gb": round(m.size_gb, 2),
@@ -272,10 +223,7 @@ def models(backend: str, as_json: bool):
                                 for m in avail
                             ]
                         }
-                else:
-                    async with await create_swarmui_client(settings) as client:
-                        manager = SUMgr(client)
-                        avail = await manager.list_available_models()
+                    else:
                         results["swarmui"] = {
                             "models": [
                                 {"name": m.name, "path": m.path, "size_gb": round(m.size_gb, 2)}
@@ -294,20 +242,7 @@ def models(backend: str, as_json: bool):
                 if "error" in info:
                     click.echo(info["error"])
                 elif info.get("models"):
-                    models = info["models"]
-                    has_size = any(m.get("size_gb", 0) > 0 for m in models)
-                    has_loaded = any(m.get("loaded_instances") for m in models)
-
-                    if has_size and has_loaded:
-                        headers = ["Name", "Path", "Size (GB)", "Loaded Instances"]
-                        rows = [[m["name"], m["path"], f"{m['size_gb']:.1f}", ", ".join(m.get('loaded_instances', []))] for m in models]
-                    elif has_size:
-                        headers = ["Name", "Path", "Size (GB)"]
-                        rows = [[m["name"], m["path"], f"{m['size_gb']:.1f}"] for m in models]
-                    else:
-                        headers = ["Name", "Path"]
-                        rows = [[m["name"], m["path"]] for m in models]
-                    click.echo(format_table(rows, headers))
+                    click.echo(format_available_models_table(info["models"]))
                 else:
                     click.echo("No models available.")
 
@@ -326,20 +261,14 @@ def load(backend: str, model: str):
     """Load a model onto the specified backend."""
 
     async def _do_load():
-        from .services.lmstudio.monitor import LmStudioManager as LSMgr, LmStudioMonitor
-        from .services.swarmui.monitor import SwarmUIManager as SUMgr
+        from .cli.factories import create_client
 
         settings = get_settings()
-        if backend == "lmstudio":
-            async with await create_lmstudio_client(settings) as client:
-                manager = LSMgr(client)
-                await manager.load_model(model)
-                click.echo(f"Loaded '{model}' on LMStudio.")
-        else:
-            async with await create_swarmui_client(settings) as client:
-                manager = SUMgr(client)
-                await manager.load_model(model)
-                click.echo(f"Loaded '{model}' on SwarmUI.")
+        async with create_client(settings, backend) as client:
+            monitor_cls, manager_cls = get_backend_classes(backend)
+            mgr = manager_cls(client)
+            await mgr.load_model(model)
+            click.echo(f"Loaded '{model}' on {backend}.")
 
     try:
         asyncio.run(_do_load())
@@ -356,13 +285,14 @@ def unload(backend: str, model: str):
     """Unload a specific model instance (LMStudio only)."""
 
     async def _do_unload():
-        from .services.lmstudio.monitor import LmStudioManager as LSMgr
+        from .cli.factories import create_client
 
         settings = get_settings()
         if backend == "lmstudio":
-            async with await create_lmstudio_client(settings) as client:
-                manager = LSMgr(client)
-                await manager.unload_model(model)
+            async with create_client(settings, backend) as client:
+                monitor_cls, manager_cls = get_backend_classes(backend)
+                mgr = manager_cls(client)
+                await mgr.unload_model(model)
                 click.echo(f"Unloaded instance '{model}' from LMStudio.")
         else:
             raise click.ClickException(
@@ -384,20 +314,14 @@ def free_memory(backend: str):
     """Free all model memory. LMStudio unloads each loaded model; SwarmUI clears ALL."""
 
     async def _do_free():
-        from .services.lmstudio.monitor import LmStudioManager as LSMgr
-        from .services.swarmui.monitor import SwarmUIManager as SUMgr
+        from .cli.factories import create_client
 
         settings = get_settings()
-        if backend == "lmstudio":
-            async with await create_lmstudio_client(settings) as client:
-                manager = LSMgr(client)
-                await manager.free_memory()
-                click.echo("LMStudio: Freed all model memory.")
-        else:
-            async with await create_swarmui_client(settings) as client:
-                manager = SUMgr(client)
-                await manager.free_memory()
-                click.echo("SwarmUI: Cleared all backend memory.")
+        async with create_client(settings, backend) as client:
+            monitor_cls, manager_cls = get_backend_classes(backend)
+            mgr = manager_cls(client)
+            await mgr.free_memory()
+            click.echo(f"{backend}: Freed all model memory.")
 
     try:
         asyncio.run(_do_free())
@@ -415,9 +339,8 @@ def status(backend: str | None, as_json: bool):
     """Quick health check of backends. Use --backend to filter."""
 
     async def _do_status():
+        from .cli.factories import create_client
         from .utils.formatter import format_table, format_json
-        from .services.lmstudio.monitor import LmStudioMonitor as LSM
-        from .services.swarmui.monitor import SwarmUIMonitor as SUM
 
         settings = get_settings()
         results: dict[str, Any] = {}
@@ -430,37 +353,21 @@ def status(backend: str | None, as_json: bool):
 
         for target in targets:
             try:
-                if target == "lmstudio":
-                    async with await create_lmstudio_client(settings) as client:
-                        mon = LSM(client)
-                        try:
-                            loaded = await mon.list_loaded_models()
-                            results["lmstudio"] = {"reachable": True, "loaded_models": len(loaded)}
-                        except Exception as e:
-                            results["lmstudio"] = {"reachable": False, "error": str(e)}
-                else:
-                    async with await create_swarmui_client(settings) as client:
-                        mon = SUM(client)
-                        try:
-                            loaded = await mon.list_loaded_models()
-                            results["swarmui"] = {"reachable": True, "loaded_models": len(loaded)}
-                        except Exception as e:
-                            results["swarmui"] = {"reachable": False, "error": str(e)}
+                async with create_client(settings, target) as client:
+                    monitor_cls, _ = get_backend_classes(target)
+                    mon = monitor_cls(client)
+                    try:
+                        loaded = await mon.list_loaded_models()
+                        results[target] = {"reachable": True, "loaded_models": len(loaded)}
+                    except Exception as e:
+                        results[target] = {"reachable": False, "error": str(e)}
             except Exception as e:
                 results[target] = {"reachable": False, "error": str(e)}
 
         if as_json:
             click.echo(format_json(results))
         else:
-            headers = ["Backend", "Reachable", "Loaded Models"]
-            rows = []
-            for name, info in results.items():
-                reachable = "Yes" if info.get("reachable") else "No"
-                loaded = info.get("loaded_models", "-")
-                not_running = "not running" if (not info.get("reachable") and "error" not in info) else ""
-                extra = f" ({info.get('error', '')})" if info.get("error") else (f" [{not_running}]" if not_running else "")
-                rows.append([name.capitalize(), reachable, str(loaded) + extra])
-            click.echo(format_table(rows, headers))
+            click.echo(format_status_table(results))
 
     try:
         asyncio.run(_do_status())
@@ -470,30 +377,6 @@ def status(backend: str | None, as_json: bool):
 
 
 # ── Switch command — save current models, load app models, run subcommand, restore ──
-
-_SWITCH_STATE_FILE = os.path.join("/tmp", "llm-switch-state.json")
-
-
-def _save_switch_state(instance_ids):
-    """Save current LMStudio loaded model instance IDs to temp file."""
-    with open(_SWITCH_STATE_FILE, 'w') as f:
-        json.dump({"instance_ids": instance_ids}, f)
-
-
-def _load_switch_state():
-    """Load saved state from temp file. Returns list of instance IDs or empty list."""
-    if not os.path.exists(_SWITCH_STATE_FILE):
-        return []
-    with open(_SWITCH_STATE_FILE, 'r') as f:
-        data = json.load(f)
-    return data.get("instance_ids", [])
-
-
-def _cleanup_switch_state():
-    """Remove temp state file."""
-    if os.path.exists(_SWITCH_STATE_FILE):
-        os.remove(_SWITCH_STATE_FILE)
-
 
 @cli.command()
 @click.argument("app_name")
@@ -506,6 +389,8 @@ def switch(app_name: str, args: tuple[str, ...]):
     Automatically restores previous LMStudio models after the command exits.
     SwarmUI memory is cleared on switch and restored by freeing all on return.
     """
+    from .cli.state import save_switch_state, load_switch_state, cleanup_switch_state
+
     config_path = os.path.join(os.path.expanduser("~"), ".llm-switch-config.json")
 
     # Load app config
@@ -522,34 +407,36 @@ def switch(app_name: str, args: tuple[str, ...]):
         )
 
     async def _do_switch():
-        from .services.lmstudio.monitor import LmStudioManager as LSMgr, LmStudioMonitor
-        from .services.swarmui.monitor import SwarmUIManager as SUMgr
+        from .cli.factories import create_client
 
         settings = get_settings()
 
         # Step 1: Save current LMStudio loaded models
         try:
-            async with await create_lmstudio_client(settings) as client:
-                mon = LmStudioMonitor(client)
+            async with create_client(settings, "lmstudio") as client:
+                monitor_cls, _ = get_backend_classes("lmstudio")
+                mon = monitor_cls(client)
                 saved_models = await mon.list_loaded_models()
                 instance_ids = [m.instance_id for m in saved_models if m.instance_id]
-                _save_switch_state(instance_ids)
+                save_switch_state(instance_ids)
                 click.echo(f"  Saved {len(instance_ids)} LMStudio model(s): {instance_ids}")
         except Exception as e:
             logger.warning("Could not save current models: %s", e)
 
         # Step 2: Free all memory (LMStudio unload + SwarmUI free)
         try:
-            async with await create_lmstudio_client(settings) as client:
-                mgr = LSMgr(client)
+            async with create_client(settings, "lmstudio") as client:
+                _, manager_cls = get_backend_classes("lmstudio")
+                mgr = manager_cls(client)
                 await mgr.free_memory()
                 click.echo("  Freed LMStudio memory")
         except Exception as e:
             logger.warning("Could not free LMStudio memory: %s", e)
 
         try:
-            async with await create_swarmui_client(settings) as client:
-                mgr = SUMgr(client)
+            async with create_client(settings, "swarmui") as client:
+                _, manager_cls = get_backend_classes("swarmui")
+                mgr = manager_cls(client)
                 await mgr.free_memory()
                 click.echo("  Freed SwarmUI memory")
         except NotImplementedError:
@@ -561,18 +448,12 @@ def switch(app_name: str, args: tuple[str, ...]):
         after = profile.get("after", {})
         for backend_name, load_models in after.items():
             try:
-                if backend_name == "lmstudio":
-                    async with await create_lmstudio_client(settings) as client:
-                        mgr = LSMgr(client)
-                        for model_path in load_models:
-                            await mgr.load_model(model_path)
-                            click.echo(f"  Loaded '{model_path}' on {backend_name}")
-                elif backend_name == "swarmui":
-                    async with await create_swarmui_client(settings) as client:
-                        mgr = SUMgr(client)
-                        for model_path in load_models:
-                            await mgr.load_model(model_path)
-                            click.echo(f"  Loaded '{model_path}' on {backend_name}")
+                async with create_client(settings, backend_name) as client:
+                    _, manager_cls = get_backend_classes(backend_name)
+                    mgr = manager_cls(client)
+                    for model_path in load_models:
+                        await mgr.load_model(model_path)
+                        click.echo(f"  Loaded '{model_path}' on {backend_name}")
             except NotImplementedError:
                 pass
 
@@ -582,16 +463,17 @@ def switch(app_name: str, args: tuple[str, ...]):
             cmd = list(args)
             click.echo(f"  Running: {' '.join(cmd)}\n")
             result = subprocess.run(cmd, env={**os.environ})
-            _cleanup_switch_state()
+            cleanup_switch_state()
             if result.returncode != 0:
                 raise click.ClickException(f"Command exited with code {result.returncode}")
 
         # Step 5: Restore previous LMStudio models (auto-restore)
-        saved_ids = _load_switch_state()
+        saved_ids = load_switch_state()
         if saved_ids:
             try:
-                async with await create_lmstudio_client(settings) as client:
-                    mgr = LSMgr(client)
+                async with create_client(settings, "lmstudio") as client:
+                    _, manager_cls = get_backend_classes("lmstudio")
+                    mgr = manager_cls(client)
                     for instance_id in saved_ids:
                         # Unload the new model first, then restore old one
                         try:
@@ -611,7 +493,7 @@ def switch(app_name: str, args: tuple[str, ...]):
             except Exception as e:
                 logger.warning("Could not restore models: %s", e)
 
-        _cleanup_switch_state()
+        cleanup_switch_state()
 
     try:
         asyncio.run(_do_switch())

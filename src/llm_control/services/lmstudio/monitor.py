@@ -6,13 +6,14 @@ from typing import Any
 from llm_control.models.resource import ResourceUsage
 from llm_control.models.model_info import LoadedModel, DownloadedModel
 from llm_control.models.backend_status import ServerStatus, BackendStatus
+from llm_control.services.interface import IBackendMonitor, IModelManager
 from llm_control.services.lmstudio.client import LmStudioClient
 from llm_control.utils.formatter import parse_model_list
 
 logger = logging.getLogger(__name__)
 
 
-class LmStudioMonitor:
+class LmStudioMonitor(IBackendMonitor):
     """Collects and transforms monitoring data from LMStudio.
 
     Note: LMStudio v1 REST API does NOT expose per-model VRAM/RAM/CPU stats.
@@ -54,7 +55,7 @@ class LmStudioMonitor:
         return models
 
 
-class LmStudioManager:
+class LmStudioManager(IModelManager):
     """Manages model lifecycle for LMStudio."""
 
     def __init__(self, client: LmStudioClient):

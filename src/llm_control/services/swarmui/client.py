@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -61,7 +61,7 @@ class SwarmUIClient:
                     self._session_id = session_id
                     logger.info("Obtained new SwarmUI session")
                     return session_id
-            except (httpx.HTTPError, httpx.RequestError) as exc:
+            except httpx.HTTPError as exc:
                 logger.debug("Session get attempt %d failed: %s", attempt + 1, exc)
                 if attempt < len(self._retry_intervals) - 1:
                     await asyncio.sleep(delay)
@@ -81,45 +81,50 @@ class SwarmUIClient:
         # Session already exists — reuse it until server rejects it
         return self._session_id
 
+    async def _retry(self, func: Callable) -> Any:
+        """Execute with retry, resetting session on error.
+
+        Shared helper used by get() and post() to eliminate duplicate retry loops.
+        Resets _session_id on HTTP errors so the next attempt gets a fresh session.
+        """
+        for attempt, delay in enumerate(self._retry_intervals):
+            try:
+                return await func()
+            except httpx.HTTPError as exc:
+                logger.debug("Attempt %d failed: %s", attempt + 1, exc)
+                self._session_id = None  # Force session refresh on error
+                if attempt < len(self._retry_intervals) - 1:
+                    await asyncio.sleep(delay)
+                else:
+                    raise
+
     async def get(self, path: str, **kwargs: Any) -> dict:
         """Send a GET request with session."""
         session_id = await self._ensure_session()
         url = f"/API/{path.lstrip('/')}"
         params = {"session_id": session_id}
-        for attempt, delay in enumerate(self._retry_intervals):
-            try:
-                resp = await self._client.get(url, params=params, **kwargs)
-                resp.raise_for_status()
-                logger.info("GET %s succeeded (attempt %d)", url, attempt + 1)
-                return resp.json()
-            except (httpx.HTTPError, httpx.RequestError) as exc:
-                logger.debug("GET attempt %d failed for %s: %s", attempt + 1, url, exc)
-                self._session_id = None  # Force session refresh on error
-                if attempt < len(self._retry_intervals) - 1:
-                    await asyncio.sleep(delay)
-                else:
-                    raise
+
+        async def _do_get():
+            resp = await self._client.get(url, params=params, **kwargs)
+            resp.raise_for_status()
+            logger.info("GET %s succeeded", url)
+            return resp.json()
+
+        return await self._retry(_do_get)
 
     async def post(self, path: str, payload: dict | None = None) -> dict:
         """Send a POST request with session."""
         session_id = await self._ensure_session()
         url = f"/API/{path.lstrip('/')}"
-        body = payload or {}
-        body["session_id"] = session_id
+        body = {**(payload or {}), "session_id": session_id}
 
-        for attempt, delay in enumerate(self._retry_intervals):
-            try:
-                resp = await self._client.post(url, json=body)
-                resp.raise_for_status()
-                logger.info("POST %s succeeded (attempt %d)", url, attempt + 1)
-                return resp.json()
-            except (httpx.HTTPError, httpx.RequestError) as exc:
-                logger.debug("POST attempt %d failed for %s: %s", attempt + 1, url, exc)
-                self._session_id = None  # Force session refresh on error
-                if attempt < len(self._retry_intervals) - 1:
-                    await asyncio.sleep(delay)
-                else:
-                    raise
+        async def _do_post():
+            resp = await self._client.post(url, json=body)
+            resp.raise_for_status()
+            logger.info("POST %s succeeded", url)
+            return resp.json()
+
+        return await self._retry(_do_post)
 
     async def close(self) -> None:
         """Close the HTTP client."""
